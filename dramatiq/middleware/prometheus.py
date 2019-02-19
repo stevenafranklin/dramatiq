@@ -1,7 +1,22 @@
-import fcntl
-import glob
-import os
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import fcntl
+import os
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -109,6 +124,11 @@ class Prometheus(Middleware):
         self.server.start()
 
     def after_worker_shutdown(self, broker, worker):
+        from prometheus_client import multiprocess
+
+        self.logger.debug("Marking process dead...")
+        multiprocess.mark_process_dead(os.getpid(), DB_PATH)
+
         self.logger.debug("Shutting down exposition server...")
         self.server.stop()
 
@@ -169,7 +189,8 @@ class _ExpositionServer(Thread):
                 return
 
             self.logger.debug("Lock file acquired. Running exposition server.")
-            self.cleanup_db_path()
+            if not os.path.exists(DB_PATH):
+                os.makedirs(DB_PATH)
 
             try:
                 self.httpd = HTTPServer(self.address, metrics_handler)
@@ -181,16 +202,6 @@ class _ExpositionServer(Thread):
         if self.httpd:
             self.httpd.shutdown()
             self.join()
-
-    def cleanup_db_path(self):
-        if not os.path.exists(DB_PATH):
-            os.makedirs(DB_PATH)
-
-        for dbfile in glob.glob(os.path.join(DB_PATH, "*.db")):
-            try:
-                os.unlink(dbfile)
-            except OSError:
-                pass
 
 
 class metrics_handler(BaseHTTPRequestHandler):

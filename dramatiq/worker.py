@@ -1,14 +1,36 @@
-import time
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import os
+import time
 from collections import defaultdict
 from itertools import chain
-from queue import Empty, PriorityQueue, Queue
+from queue import Empty, PriorityQueue
 from threading import Event, Thread
 
-from .common import compute_backoff, current_millis, iter_queue, join_all, q_name
-from .errors import ActorNotFound, ConnectionError
+from .common import current_millis, iter_queue, join_all, q_name
+from .errors import ActorNotFound, ConnectionError, RateLimitExceeded
 from .logging import get_logger
 from .middleware import Middleware, SkipMessage
+
+#: The number of milliseconds to wait before restarting consumers
+#: after a connection error.
+CONSUMER_RESTART_DELAY = int(os.getenv("dramatiq_restart_delay", 3000))
+CONSUMER_RESTART_DELAY_SECS = CONSUMER_RESTART_DELAY / 1000
 
 
 class Worker:
@@ -21,16 +43,20 @@ class Worker:
 
     Parameters:
       broker(Broker)
+      queues(Set[str]): An optional subset of queues to listen on.  By
+        default, if this is not provided, the worker will listen on
+        all declared queues.
       worker_timeout(int): The number of milliseconds workers should
         wake up after if the queue is idle.
       worker_threads(int): The number of worker threads to spawn.
     """
 
-    def __init__(self, broker, *, worker_timeout=1000, worker_threads=8):
+    def __init__(self, broker, *, queues=None, worker_timeout=1000, worker_threads=8):
         self.logger = get_logger(__name__, type(self))
         self.broker = broker
 
         self.consumers = {}
+        self.consumer_whitelist = queues and set(queues)
         # Load a small factor more messages than there are workers to
         # avoid waiting on network IO as much as possible.  The factor
         # must be small so we don't starve other workers out.
@@ -60,17 +86,17 @@ class Worker:
     def pause(self):
         """Pauses all the worker threads.
         """
-        for worker in self.workers:
-            worker.pause()
+        for child in chain(self.consumers.values(), self.workers):
+            child.pause()
 
-        for worker in self.workers:
-            worker.paused_event.wait()
+        for child in chain(self.consumers.values(), self.workers):
+            child.paused_event.wait()
 
     def resume(self):
         """Resumes all the worker threads.
         """
-        for worker in self.workers:
-            worker.resume()
+        for child in chain(self.consumers.values(), self.workers):
+            child.resume()
 
     def stop(self, timeout=600000):
         """Gracefully stop the Worker and all of its consumers and
@@ -82,12 +108,22 @@ class Worker:
         """
         self.broker.emit_before("worker_shutdown", self)
         self.logger.info("Shutting down...")
-        self.logger.debug("Stopping consumers and workers...")
-        for thread in chain(self.workers, self.consumers.values()):
+
+        # Stop workers before consumers.  The consumers are kept alive
+        # during this process so that heartbeats keep being sent to
+        # the broker while workers finish their current tasks.
+        self.logger.debug("Stopping workers...")
+        for thread in self.workers:
             thread.stop()
 
-        join_all(chain(self.workers, self.consumers.values()), timeout)
-        self.logger.debug("Consumers and workers stopped.")
+        join_all(self.workers, timeout)
+        self.logger.debug("Workers stopped.")
+        self.logger.debug("Stopping consumers...")
+        for thread in self.consumers.values():
+            thread.stop()
+
+        join_all(self.consumers.values(), timeout)
+        self.logger.debug("Consumers stopped.")
 
         self.logger.debug("Requeueing in-memory messages...")
         messages_by_queue = defaultdict(list)
@@ -97,7 +133,7 @@ class Worker:
         for queue_name, messages in messages_by_queue.items():
             try:
                 self.consumers[queue_name].requeue_messages(messages)
-            except ConnectionError as e:
+            except ConnectionError:
                 self.logger.warning("Failed to requeue messages on queue %r.", queue_name, exc_info=True)
         self.logger.debug("Done requeueing in-progress messages.")
 
@@ -123,13 +159,21 @@ class Worker:
             # joining on the work queue then it shoud be safe to exit.
             # This could still miss stuff but the chances are slim.
             for consumer in self.consumers.values():
-                if consumer.delay_queue.qsize() > 0:
+                if consumer.delay_queue.unfinished_tasks:
                     break
             else:
+                if self.work_queue.unfinished_tasks:
+                    continue
                 return
 
     def _add_consumer(self, queue_name, *, delay=False):
         if queue_name in self.consumers:
+            self.logger.debug("A consumer for queue %r is already running.", queue_name)
+            return
+
+        canonical_name = q_name(queue_name)
+        if self.consumer_whitelist and canonical_name not in self.consumer_whitelist:
+            self.logger.debug("Dropping consumer for queue %r: not whitelisted.", queue_name)
             return
 
         consumer = self.consumers[queue_name] = _ConsumerThread(
@@ -172,6 +216,8 @@ class _ConsumerThread(Thread):
 
         self.logger = get_logger(__name__, "ConsumerThread(%s)" % queue_name)
         self.running = False
+        self.paused = False
+        self.paused_event = Event()
         self.consumer = None
         self.broker = broker
         self.prefetch = prefetch
@@ -179,73 +225,55 @@ class _ConsumerThread(Thread):
         self.work_queue = work_queue
         self.worker_timeout = worker_timeout
         self.delay_queue = PriorityQueue()
-        self.acks_queue = Queue()
 
-    def run(self, attempts=0):
-        try:
-            self.logger.debug("Running consumer thread...")
-            self.running = True
-            self.consumer = self.broker.consume(
-                queue_name=self.queue_name,
-                prefetch=self.prefetch,
-                timeout=self.worker_timeout,
-            )
+    def run(self):
+        self.logger.debug("Running consumer thread...")
+        self.running = True
+        while self.running:
+            if self.paused:
+                self.logger.debug("Consumer is paused. Sleeping for %.02fms...", self.worker_timeout)
+                self.paused_event.set()
+                time.sleep(self.worker_timeout / 1000)
+                continue
 
-            # Reset the attempts counter since we presumably got a
-            # working connection.
-            attempts = 0
-            for message in self.consumer:
-                if message is not None:
-                    self.handle_message(message)
+            try:
+                self.consumer = self.broker.consume(
+                    queue_name=self.queue_name,
+                    prefetch=self.prefetch,
+                    timeout=self.worker_timeout,
+                )
 
-                self.handle_acks()
-                self.handle_delayed_messages()
-                if not self.running:
-                    break
+                for message in self.consumer:
+                    if message is not None:
+                        self.handle_message(message)
 
-        except ConnectionError:
-            self.logger.error("Consumer encountered a connection error.", exc_info=True)
-            # Acking is unsafe when the connection is abruptly closed
-            # so we must clear the queue.  All brokers have at-least
-            # once semantics so this is a safe operation.
-            self.acks_queue = Queue()
-            self.delay_queue = PriorityQueue()
+                    elif self.paused:
+                        break
 
-        except Exception as e:
-            self.logger.error("Consumer encountered an error.", exc_info=True)
-            # Avoid leaving any open file descriptors around when
-            # an exception occurs.
-            self.close()
+                    self.handle_delayed_messages()
+                    if not self.running:
+                        break
 
-        # The consumer must retry itself with exponential backoff
-        # assuming it hasn't been shut down.
-        if self.running:
-            attempts, backoff_ms = compute_backoff(attempts, jitter=False, factor=100, max_backoff=60000)
-            self.logger.debug("Waiting for %d milliseconds before restarting...", backoff_ms)
-            self.close()
-            time.sleep(backoff_ms / 1000)
-            return self.run(attempts=attempts)
+            except ConnectionError as e:
+                self.logger.critical("Consumer encountered a connection error: %s", e)
+                self.delay_queue = PriorityQueue()
 
+            except Exception:
+                self.logger.critical("Consumer encountered an unexpected error.", exc_info=True)
+                # Avoid leaving any open file descriptors around when
+                # an exception occurs.
+                self.close()
+
+            # While the consumer is running (i.e. hasn't been shut down),
+            # try to restart it once a second.
+            if self.running:
+                self.logger.info("Restarting consumer in %0.2f seconds.", CONSUMER_RESTART_DELAY_SECS)
+                self.close()
+                time.sleep(CONSUMER_RESTART_DELAY_SECS)
+
+        # If it's no longer running, then shut it down gracefully.
         self.broker.emit_before("consumer_thread_shutdown", self)
         self.logger.debug("Consumer thread stopped.")
-
-    def handle_acks(self):
-        """Perform any pending (n)acks.
-        """
-        for message in iter_queue(self.acks_queue):
-            if message.failed:
-                self.logger.debug("Rejecting message %r.", message.message_id)
-                self.broker.emit_before("nack", message)
-                self.consumer.nack(message)
-                self.broker.emit_after("nack", message)
-
-            else:
-                self.logger.debug("Acknowledging message %r.", message.message_id)
-                self.broker.emit_before("ack", message)
-                self.consumer.ack(message)
-                self.broker.emit_after("ack", message)
-
-            self.acks_queue.task_done()
 
     def handle_delayed_messages(self):
         """Enqueue any delayed messages whose eta has passed.
@@ -292,8 +320,17 @@ class _ConsumerThread(Thread):
         individual messages, signaling that each message is ready to
         be acked or rejected.
         """
-        self.acks_queue.put(message)
-        self.consumer.interrupt()
+        if message.failed:
+            self.logger.debug("Rejecting message %r.", message.message_id)
+            self.broker.emit_before("nack", message)
+            self.consumer.nack(message)
+            self.broker.emit_after("nack", message)
+
+        else:
+            self.logger.debug("Acknowledging message %r.", message.message_id)
+            self.broker.emit_before("ack", message)
+            self.consumer.ack(message)
+            self.broker.emit_after("ack", message)
 
     def requeue_messages(self, messages):
         """Called on worker shutdown and whenever there is a
@@ -301,6 +338,18 @@ class _ConsumerThread(Thread):
         respective queues asap.
         """
         self.consumer.requeue(messages)
+
+    def pause(self):
+        """Pause this consumer.
+        """
+        self.paused = True
+        self.paused_event.clear()
+
+    def resume(self):
+        """Resume this consumer.
+        """
+        self.paused = False
+        self.paused_event.clear()
 
     def stop(self):
         """Initiate the ConsumerThread shutdown sequence.
@@ -316,7 +365,6 @@ class _ConsumerThread(Thread):
         """
         try:
             if self.consumer:
-                self.handle_acks()
                 self.requeue_messages(m for _, m in iter_queue(self.delay_queue))
                 self.consumer.close()
         except ConnectionError:
@@ -383,12 +431,16 @@ class _WorkerThread(Thread):
 
             self.broker.emit_after("process_message", message, result=res)
 
-        except SkipMessage as e:
+        except SkipMessage:
             self.logger.warning("Message %s was skipped.", message)
             self.broker.emit_after("skip_message", message)
 
         except BaseException as e:
-            self.logger.warning("Failed to process message %s with unhandled exception.", message, exc_info=True)
+            if isinstance(e, RateLimitExceeded):
+                self.logger.warning("Rate limit exceeded in message %s: %s.", message, e)
+            else:
+                self.logger.warning("Failed to process message %s with unhandled exception.", message, exc_info=True)
+
             self.broker.emit_after("process_message", message, exception=e)
 
         finally:

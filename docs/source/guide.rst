@@ -7,7 +7,7 @@ To follow along with this guide you'll need to install and run RabbitMQ_
 and then set up a new `virtual environment`_ in which you'll have
 to install Dramatiq and Requests_::
 
-  $ pip install dramatiq[rabbitmq, watch] requests
+  $ pip install 'dramatiq[rabbitmq, watch]' requests
 
 .. _requests: http://docs.python-requests.org
 .. _virtual environment: http://docs.python-guide.org/en/latest/starting/install3/osx/#virtual-environments
@@ -150,9 +150,8 @@ actor an invalid URL.  Let's try it::
 Error Handling
 --------------
 
-Dramatiq strives for at-least-once message delivery and assumes all
-actors are idempotent.  When an exception occurs while a message is
-being processed, Dramatiq automatically enqueues a retry for that
+Dramatiq assumes all actors are idempotent so when an exception occurs
+during message processing, it automatically enqueues a retry for that
 message with exponential backoff.
 
 That last message we sent will cause something along these lines to be
@@ -224,15 +223,26 @@ For example, if you want to limit the maximum number of retries for
   def count_words(url):
     ...
 
+If you want to retry certain exceptions and not others, you can pass a
+predicate function via the ``retry_when`` parameter::
+
+  def should_retry(retries_so_far, exception):
+    return retries_so_far < 3 and isinstance(exception, HttpTimeout)
+
+  @dramatiq.actor(retry_when=should_retry)
+  def count_words(url):
+    ...
+
 The following retry options are configurable on a per-actor basis:
 
-===============  ============  ====================================================================================================================
+===============  ============  =====================================================================================================================
 Option           Default       Description
-===============  ============  ====================================================================================================================
+===============  ============  =====================================================================================================================
 ``max_retries``  ``20``        The maximum number of times a message should be retried.  ``None`` means the message should be retried indefinitely.
 ``min_backoff``  15 seconds    The minimum number of milliseconds of backoff to apply between retries.  Must be greater than 100 milliseconds.
-``max_backoff``  7 days        The maximum number of milliseconds of backoff to apply between retries.  Must be less than or equal to 7 days.
-===============  ============  ====================================================================================================================
+``max_backoff``  7 days        The maximum number of milliseconds of backoff to apply between retries.  Higher values are less reliable.
+``retry_when``   ``None``      A callable that determines whether or not a message should be retried.  When this is set, ``max_retries`` is ignored.
+===============  ============  =====================================================================================================================
 
 
 Message Age Limits
@@ -282,6 +292,8 @@ specifying the ``time_limit`` (in milliseconds) of each one::
    Time limits are best-effort.  They cannot cancel system calls or
    any function that doesn't currently hold the GIL under CPython.
 
+   For more information, see the section on :ref:`message-interrupts`.
+
 
 Handling Time Limits
 ^^^^^^^^^^^^^^^^^^^^
@@ -304,8 +316,8 @@ wrap its source code in a try block and catch |TimeLimitExceeded|::
 Scheduling Messages
 -------------------
 
-You can schedule messages to run up to 7 days into the future by
-calling |send_with_options| on actors and providing a ``delay`` (in
+You can schedule messages to run some time in the future by calling
+|send_with_options| on actors and providing a ``delay`` (in
 milliseconds)::
 
   >>> count_words.send_with_options(args=("https://example.com",), delay=10000)

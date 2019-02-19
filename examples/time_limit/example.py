@@ -1,8 +1,8 @@
-import dramatiq
-import logging
 import os
 import sys
 import time
+
+import dramatiq
 
 if os.getenv("REDIS") == "1":
     from dramatiq.brokers.redis import RedisBroker
@@ -12,7 +12,7 @@ if os.getenv("REDIS") == "1":
 
 @dramatiq.actor(time_limit=5000, max_retries=3)
 def long_running():
-    logger = logging.getLogger("long_running")
+    logger = long_running.logger
 
     while True:
         logger.info("Sleeping...")
@@ -21,7 +21,7 @@ def long_running():
 
 @dramatiq.actor(time_limit=5000, max_retries=0)
 def long_running_with_catch():
-    logger = logging.getLogger("long_running_with_catch")
+    logger = long_running_with_catch.logger
 
     try:
         while True:

@@ -3,25 +3,27 @@
 Dramatiq: simple task processing
 ================================
 
-Release v\ |release|. (:doc:`installation`, :doc:`changelog`)
+Release v\ |release|. (:doc:`installation`, :doc:`changelog`, `Discuss`_, `Source Code`_, `Professional Support`_)
 
-.. image:: https://img.shields.io/badge/license-AGPL-blue.svg
+.. _Discuss: https://reddit.com/r/dramatiq
+.. _Source Code: https://github.com/Bogdanp/dramatiq
+.. _Professional Support: https://tidelift.com/subscription/pkg/pypi-dramatiq?utm_source=pypi-dramatiq&utm_medium=referral&utm_campaign=docs
+
+.. image:: https://img.shields.io/badge/license-LGPL-blue.svg
    :target: license.html
 .. image:: https://travis-ci.org/Bogdanp/dramatiq.svg?branch=master
    :target: https://travis-ci.org/Bogdanp/dramatiq
-.. image:: https://api.codeclimate.com/v1/badges/2e03a54d3d3ee0bb93c4/test_coverage
-   :target: https://codeclimate.com/github/Bogdanp/dramatiq/test_coverage
-.. image:: https://api.codeclimate.com/v1/badges/2e03a54d3d3ee0bb93c4/maintainability
-   :target: https://codeclimate.com/github/Bogdanp/dramatiq/maintainability
 .. image:: https://badge.fury.io/py/dramatiq.svg
    :target: https://badge.fury.io/py/dramatiq
+.. image:: https://tidelift.com/badges/github/Bogdanp/dramatiq
+   :target: https://tidelift.com/subscription/pkg/pypi-dramatiq?utm_source=pypi-dramatiq&utm_medium=referral&utm_campaign=docs
 
 **Dramatiq** is a distributed task processing library for Python with
 a focus on simplicity, reliability and performance.
 
 .. raw:: html
 
-   <iframe width="660" height="371" src="https://www.youtube-nocookie.com/embed/RdMQZpITX4k?rel=0&vq=hd1440" frameborder="0" gesture="media" allowfullscreen></iframe>
+   <iframe width="660" height="371" sandbox="allow-same-origin allow-scripts" src="https://peertube.social/videos/embed/754b811e-16a1-459c-9ed8-a08e535ad7f1" frameborder="0" allowfullscreen></iframe>
 
 Here's what it looks like:
 
@@ -43,9 +45,8 @@ Here's what it looks like:
   # later, in a separate process.
   count_words.send("http://example.com")
 
-**Dramatiq** is :doc:`licensed<license>` under the AGPL and it
-officially supports Python 3.5 and later.  :doc:`commercial` is also
-available.  Commercial licenses are free for one year for startups.
+**Dramatiq** is :doc:`licensed<license>` under the LGPL and it
+officially supports Python 3.5 and later.
 
 
 Get It Now
@@ -53,11 +54,11 @@ Get It Now
 
 If you want to use it with RabbitMQ_::
 
-   $ pip install -U dramatiq[rabbitmq, watch]
+   $ pip install -U 'dramatiq[rabbitmq, watch]'
 
 Or if you want to use it with Redis_::
 
-   $ pip install -U dramatiq[redis, watch]
+   $ pip install -U 'dramatiq[redis, watch]'
 
 Read the :doc:`motivation` behind it or the :doc:`guide` if you're
 ready to get started.
@@ -98,36 +99,9 @@ Project Info
 .. toctree::
    :maxdepth: 1
 
+   Source Code <https://github.com/Bogdanp/dramatiq>
    changelog
-   contributing
+   Contributing <https://github.com/Bogdanp/dramatiq/blob/master/CONTRIBUTING.md>
+   Discussion Board <https://reddit.com/r/dramatiq>
+   Professional Support <https://tidelift.com/subscription/pkg/pypi-dramatiq?utm_source=pypi-dramatiq&utm_medium=referral&utm_campaign=docs>
    license
-   commercial
-
-
-Newsletter
-----------
-
-Subscribe to our occasional newsletter to receive up-to-date info on
-Dramatiq features and changes.
-
-.. raw:: html
-
-   <!-- Begin MailChimp Signup Form -->
-   <link href="//cdn-images.mailchimp.com/embedcode/horizontal-slim-10_7.css" rel="stylesheet" type="text/css">
-   <style type="text/css">
-   #mc_embed_signup{background:#fff; clear:left; font:14px Helvetica,Arial,sans-serif; width:100%;}
-   /* Add your own MailChimp form style overrides in your site stylesheet or in this style block.
-   We recommend moving this block and the preceding CSS link to the HEAD of your HTML file. */
-   </style>
-   <div id="mc_embed_signup">
-   <form action="https://free-invoice-generator.us9.list-manage.com/subscribe/post?u=f6efb8a2c1d1bc993557d7aa5&amp;id=d1b2f95cb1" method="post" id="mc-embedded-subscribe-form" name="mc-embedded-subscribe-form" class="validate" target="_blank" novalidate>
-   <div id="mc_embed_signup_scroll">
-
-   <input type="email" value="" name="EMAIL" class="email" id="mce-EMAIL" placeholder="email address" required>
-   <!-- real people should not fill this in and expect good things - do not remove this or risk form bot signups-->
-   <div style="position: absolute; left: -5000px;" aria-hidden="true"><input type="text" name="b_f6efb8a2c1d1bc993557d7aa5_d1b2f95cb1" tabindex="-1" value=""></div>
-   <div class="clear"><input type="submit" value="Subscribe" name="subscribe" id="mc-embedded-subscribe" class="button"></div>
-   </div>
-   </form>
-   </div>
-   <!--End mc_embed_signup-->

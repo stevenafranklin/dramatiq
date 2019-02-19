@@ -1,26 +1,41 @@
-import errno
-import logging
-import pika
-import socket
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import logging
+import time
+import warnings
+from functools import partial
 from itertools import chain
-from threading import local
+from threading import Event, local
+
+import pika
 
 from ..broker import Broker, Consumer, MessageProxy
 from ..common import current_millis, dq_name, xq_name
-from ..errors import ConnectionClosed
+from ..errors import ConnectionClosed, QueueJoinTimeout
 from ..logging import get_logger
 from ..message import Message
 
 #: The maximum amount of time a message can be in the dead queue.
-DEAD_MESSAGE_TTL = 86400 * 7 * 1000
+DEAD_MESSAGE_TTL = 86400000 * 7
 
 #: The max number of times to attempt an enqueue operation in case of
 #: a connection error.
-MAX_ENQUEUE_ATTEMPTS = 2
-
-#: The max amount of time messages can be delayed by in ms.
-MAX_MESSAGE_DELAY = 86400000 * 7
+MAX_ENQUEUE_ATTEMPTS = 6
 
 
 class RabbitmqBroker(Broker):
@@ -41,24 +56,34 @@ class RabbitmqBroker(Broker):
       parameters.
 
     Parameters:
+      confirm_delivery(bool): Wait for RabbitMQ to confirm that
+        messages have been committed on every call to enqueue.
+        Defaults to False.
       url(str): An optional connection URL.  If both a URL and
         connection parameters are provided, the URL is used.
       middleware(list[Middleware]): The set of middleware that apply
         to this broker.
-      \**parameters(dict): The (pika) connection parameters to use to
+      max_priority(int): Configure the queues with x-max-priority to
+        support priority queue in RabbitMQ itself
+      **parameters(dict): The (pika) connection parameters to use to
         determine which Rabbit server to connect to.
 
-    .. _ConnectionParameters: https://pika.readthedocs.io/en/0.10.0/modules/parameters.html
+    .. _ConnectionParameters: https://pika.readthedocs.io/en/0.12.0/modules/parameters.html
     """
 
-    def __init__(self, *, url=None, middleware=None, **parameters):
+    def __init__(self, *, confirm_delivery=False, url=None, middleware=None, max_priority=None, **parameters):
         super().__init__(middleware=middleware)
+
+        if max_priority is not None and not (0 < max_priority <= 255):
+            raise ValueError("max_priority must be a value between 0 and 255")
 
         if url:
             self.parameters = pika.URLParameters(url)
         else:
             self.parameters = pika.ConnectionParameters(**parameters)
 
+        self.confirm_delivery = confirm_delivery
+        self.max_priority = max_priority
         self.connections = set()
         self.channels = set()
         self.queues = set()
@@ -93,6 +118,9 @@ class RabbitmqBroker(Broker):
         channel = getattr(self.state, "channel", None)
         if channel is None:
             channel = self.state.channel = self.connection.channel()
+            if self.confirm_delivery:
+                channel.confirm_delivery()
+
             self.channels.add(channel)
         return channel
 
@@ -121,9 +149,7 @@ class RabbitmqBroker(Broker):
         for channel_or_conn in chain(self.channels, self.connections):
             try:
                 channel_or_conn.close()
-
-            except (pika.exceptions.ChannelClosed,
-                    pika.exceptions.ConnectionClosed):
+            except pika.exceptions.AMQPError:
                 pass
 
             except Exception:  # pragma: no cover
@@ -167,25 +193,31 @@ class RabbitmqBroker(Broker):
                 self.emit_after("declare_delay_queue", delayed_name)
 
                 self._declare_xq_queue(queue_name)
-        except (pika.exceptions.ChannelClosed,
-                pika.exceptions.ConnectionClosed) as e:  # pragma: no cover
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:  # pragma: no cover
             # Delete the channel and the connection so that the next
             # caller may initiate new ones of each.
             del self.channel
             del self.connection
             raise ConnectionClosed(e) from None
 
-    def _declare_queue(self, queue_name):
-        return self.channel.queue_declare(queue=queue_name, durable=True, arguments={
+    def _build_queue_arguments(self, queue_name):
+        arguments = {
             "x-dead-letter-exchange": "",
             "x-dead-letter-routing-key": xq_name(queue_name),
-        })
+        }
+        if self.max_priority:
+            arguments["x-max-priority"] = self.max_priority
+
+        return arguments
+
+    def _declare_queue(self, queue_name):
+        arguments = self._build_queue_arguments(queue_name)
+        return self.channel.queue_declare(queue=queue_name, durable=True, arguments=arguments)
 
     def _declare_dq_queue(self, queue_name):
-        return self.channel.queue_declare(queue=dq_name(queue_name), durable=True, arguments={
-            "x-dead-letter-exchange": "",
-            "x-dead-letter-routing-key": xq_name(queue_name),
-        })
+        arguments = self._build_queue_arguments(queue_name)
+        return self.channel.queue_declare(queue=dq_name(queue_name), durable=True, arguments=arguments)
 
     def _declare_xq_queue(self, queue_name):
         return self.channel.queue_declare(queue=xq_name(queue_name), durable=True, arguments={
@@ -207,14 +239,12 @@ class RabbitmqBroker(Broker):
             has been closed.
         """
         queue_name = message.queue_name
-        properties = pika.BasicProperties(delivery_mode=2)
-        if delay is not None:
-            if delay > MAX_MESSAGE_DELAY:
-                raise ValueError(
-                    "Messages cannot be delayed for longer than 7 days. "
-                    "Your message queue is not a Database."
-                )
+        properties = pika.BasicProperties(
+            delivery_mode=2,
+            priority=message.options.get("broker_priority"),
+        )
 
+        if delay is not None:
             queue_name = dq_name(queue_name)
             message_eta = current_millis() + delay
             message = message.copy(
@@ -238,9 +268,8 @@ class RabbitmqBroker(Broker):
                 self.emit_after("enqueue", message, delay)
                 return message
 
-            except (pika.exceptions.ChannelClosed,
-                    pika.exceptions.ConnectionClosed) as e:
-
+            except (pika.exceptions.AMQPConnectionError,
+                    pika.exceptions.AMQPChannelError) as e:
                 # Delete the channel and the connection so that the
                 # next caller/attempt may initiate new ones of each.
                 del self.channel
@@ -284,7 +313,22 @@ class RabbitmqBroker(Broker):
             xq_queue_response.method.message_count,
         )
 
-    def join(self, queue_name, min_successes=10, idle_time=100):
+    def flush(self, queue_name):
+        """Drop all the messages from a queue.
+
+        Parameters:
+          queue_name(str): The queue to flush.
+        """
+        for name in (queue_name, dq_name(queue_name), xq_name(queue_name)):
+            self.channel.queue_purge(name)
+
+    def flush_all(self):
+        """Drop all messages from all declared queues.
+        """
+        for queue_name in self.queues:
+            self.flush(queue_name)
+
+    def join(self, queue_name, min_successes=10, idle_time=100, *, timeout=None):
         """Wait for all the messages on the given queue to be
         processed.  This method is only meant to be used in tests to
         wait for all the messages in a queue to be processed.
@@ -300,9 +344,15 @@ class RabbitmqBroker(Broker):
             polled queues should be empty.
           idle_time(int): The number of milliseconds to wait between
             counts.
+          timeout(Optional[int]): The max amount of time, in
+            milliseconds, to wait on this queue.
         """
+        deadline = timeout and time.monotonic() + timeout / 1000
         successes = 0
         while successes < min_successes:
+            if deadline and time.monotonic() >= deadline:
+                raise QueueJoinTimeout(queue_name)
+
             total_messages = sum(self.get_queue_message_counts(queue_name)[:-1])
             if total_messages == 0:
                 successes += 1
@@ -321,24 +371,16 @@ def URLRabbitmqBroker(url, *, middleware=None):
       middleware(list[Middleware]): The middleware to add to this
         broker.
     """
+    warnings.warn(
+        "Use RabbitmqBroker with the 'url' parameter instead of URLRabbitmqBroker.",
+        DeprecationWarning, stacklevel=2,
+    )
     return RabbitmqBroker(url=url, middleware=middleware)
 
 
 class _IgnoreScaryLogs(logging.Filter):
     def filter(self, record):
         return "Broken pipe" not in record.getMessage()
-
-
-class _InterruptEvent:
-    def dispatch(self):
-        pass
-
-
-class _InterruptMessage:
-    def __init__(self):
-        self.method = type(self)
-        self.properties = None
-        self.body = None
 
 
 class _RabbitmqConsumer(Consumer):
@@ -355,30 +397,18 @@ class _RabbitmqConsumer(Consumer):
             # we don't attempt to send invalid tags to Rabbit since
             # pika doesn't handle this very well.
             self.known_tags = set()
-
-            # We need to hook into Pika's ioloop so that we can
-            # interrupt the consumer when new ack requests come in.
-            # This is piggy, but the alternative of busy-looping is
-            # worse.  I wish pika exposed "add_handler" on the
-            # connection.
-            self.interrupt_event = _InterruptEvent()
-            self.interrupt_message = _InterruptMessage()
-            self.interrupt_sock_r, self.interrupt_sock_w = socket.socketpair()
-            self.interrupt_sock_r.setblocking(0)
-            self.interrupt_sock_w.setblocking(0)
-            self.connection._impl.ioloop.add_handler(
-                self.interrupt_sock_r.fileno(),
-                self._send_interrupt,
-                0x0001,  # READ
-            )
-        except pika.exceptions.ConnectionClosed as e:
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
 
     def ack(self, message):
         try:
             self.known_tags.remove(message._tag)
-            self.channel.basic_ack(message._tag)
-        except pika.exceptions.ChannelClosed as e:
+            self.connection.add_callback_threadsafe(
+                partial(self.channel.basic_ack, message._tag),
+            )
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
         except KeyError:
             self.logger.warning("Failed to ack message: not in known tags.")
@@ -388,8 +418,11 @@ class _RabbitmqConsumer(Consumer):
     def nack(self, message):
         try:
             self.known_tags.remove(message._tag)
-            self.channel.basic_nack(message._tag, requeue=False)
-        except pika.exceptions.ChannelClosed as e:
+            self.connection.add_callback_threadsafe(
+                partial(self.channel.basic_nack, message._tag, requeue=False),
+            )
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
         except KeyError:
             self.logger.warning("Failed to nack message: not in known tags.")
@@ -403,67 +436,41 @@ class _RabbitmqConsumer(Consumer):
 
     def __next__(self):
         try:
-            frame = next(self.iterator)
-            if frame is None:
-                return None
-
-            method, properties, body = frame
-            if method is _InterruptMessage:
+            method, properties, body = next(self.iterator)
+            if method is None:
                 return None
 
             message = Message.decode(body)
             self.known_tags.add(method.delivery_tag)
             return _RabbitmqMessage(method.delivery_tag, message)
-        except (AssertionError,  # sometimes raised by pika
-                pika.exceptions.ChannelClosed,
-                pika.exceptions.ConnectionClosed) as e:
+        except (AssertionError,
+                pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
-
-    def interrupt(self):
-        self.interrupt_sock_w.send(b"X")
-
-    def _send_interrupt(self, fd, events, error=None, write_only=False):
-        try:
-            # Send a ready event to break Pika's is_done() loop in BlockingConnection._flush_output()
-            self.connection._ready_events.append(self.interrupt_event)
-            # Send a pending event to make the consumer generator yield in BlockingChannel.consume()
-            self.channel._queue_consumer_generator.pending_events.append(self.interrupt_message)
-            # Finally, drain the socket for select
-            self.interrupt_sock_r.recv(512)
-        except OSError as e:  # pragma: no cover
-            if e.errno != errno.EAGAIN:
-                raise
 
     def close(self):
         try:
-            try:
-                self.connection._impl.ioloop.remove_handler(self.interrupt_sock_r.fileno())
-                self.interrupt_sock_w.close()
-                self.interrupt_sock_r.close()
-            except KeyError:
-                pass
+            # Closing the connection doesn't wait for all callbacks to
+            # finish processing so we enqueue a final callback and
+            # wait for it to finish before closing the connection.
+            # Assumes callbacks are called in order (they should be).
+            all_callbacks_handled = Event()
+            self.connection.add_callback_threadsafe(all_callbacks_handled.set)
+            while not all_callbacks_handled.is_set():
+                self.connection.sleep(0)
+        except Exception:
+            self.logger.exception(
+                "Failed to wait for all callbacks to complete.  This "
+                "can happen when the RabbitMQ server is suddenly "
+                "restarted."
+            )
 
-            if self.channel.is_open:
-                # Remove all the interrupt events from the pending
-                # events queue before calling cancel so pika doesn't
-                # try to reject them.
-                pending_events = []
-                pending_events_queue = self.channel._queue_consumer_generator.pending_events
-                while pending_events_queue:
-                    event = pending_events_queue.popleft()
-                    if not isinstance(event, _InterruptMessage):
-                        pending_events.append(event)
-
-                for event in pending_events:
-                    pending_events_queue.append(event)
-
-                self.channel.cancel()
-
+        try:
             self.channel.close()
             self.connection.close()
-        except (AssertionError,  # sometimes raised by pika
-                pika.exceptions.ChannelClosed,
-                pika.exceptions.ConnectionClosed) as e:
+        except (AssertionError,
+                pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
 
 

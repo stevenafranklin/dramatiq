@@ -1,8 +1,10 @@
-import dramatiq
+import time
+from unittest.mock import Mock
+
 import pytest
 
-from dramatiq import QueueNotFound
-from unittest.mock import Mock
+import dramatiq
+from dramatiq import QueueJoinTimeout, QueueNotFound
 
 
 def test_stub_broker_raises_queue_error_when_consuming_undeclared_queues(stub_broker):
@@ -35,14 +37,30 @@ def test_stub_broker_can_be_flushed(stub_broker):
     def do_work():
         pass
 
-    # If I send that actor a message
+    # When I send that actor a message
     do_work.send()
 
-    # I expect its queue to contain a message
+    # Then its queue should contain a message
     assert stub_broker.queues[do_work.queue_name].qsize() == 1
 
-    # If I then flush all the queues in the broker
+    # When I flush all the queues in the broker
     stub_broker.flush_all()
 
-    # I expect the queue to have been emptied
+    # Then the queue should be empty and it should contain no in-progress tasks
     assert stub_broker.queues[do_work.queue_name].qsize() == 0
+    assert stub_broker.queues[do_work.queue_name].unfinished_tasks == 0
+
+
+def test_stub_broker_can_join_with_timeout(stub_broker, stub_worker):
+    # Given that I have an actor that takes a long time to run
+    @dramatiq.actor
+    def do_work():
+        time.sleep(1)
+
+    # When I send that actor a message
+    do_work.send()
+
+    # And join on its queue with a timeout
+    # Then I expect a QueueJoinTimeout to be raised
+    with pytest.raises(QueueJoinTimeout):
+        stub_broker.join(do_work.queue_name, timeout=500)

@@ -1,12 +1,28 @@
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 import time
 import uuid
-
 from collections import namedtuple
 
 from .broker import get_broker
+from .composition import pipeline
 from .encoder import Encoder, JSONEncoder
 from .results import Results
-
 
 #: The global encoder instance.
 global_encoder = JSONEncoder()
@@ -62,6 +78,11 @@ class Message(namedtuple("Message", (
             message_id=message_id or generate_unique_id(),
             message_timestamp=message_timestamp or int(time.time() * 1000),
         )
+
+    def __or__(self, other) -> pipeline:
+        """Combine this message into a pipeline with "other".
+        """
+        return pipeline([self, other])
 
     def asdict(self):
         """Convert this message to a dictionary.

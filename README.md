@@ -3,57 +3,74 @@
 # dramatiq
 
 [![Build Status](https://travis-ci.org/Bogdanp/dramatiq.svg?branch=master)](https://travis-ci.org/Bogdanp/dramatiq)
-[![Test Coverage](https://api.codeclimate.com/v1/badges/2e03a54d3d3ee0bb93c4/test_coverage)](https://codeclimate.com/github/Bogdanp/dramatiq/test_coverage)
-[![Maintainability](https://api.codeclimate.com/v1/badges/2e03a54d3d3ee0bb93c4/maintainability)](https://codeclimate.com/github/Bogdanp/dramatiq/maintainability)
 [![PyPI version](https://badge.fury.io/py/dramatiq.svg)](https://badge.fury.io/py/dramatiq)
 [![Documentation](https://img.shields.io/badge/doc-latest-brightgreen.svg)](http://dramatiq.io)
+[![Discourse](https://img.shields.io/badge/discuss-online-orange.svg)](https://reddit.com/r/dramatiq)
 
-**dramatiq** is a distributed task processing library for Python with
-a focus on simplicity, reliability and performance.
+*A fast and reliable distributed task processing library for Python 3.*
 
-Here's what it looks like:
+<hr/>
+
+**Changelog**: https://dramatiq.io/changelog.html <br/>
+**Community**: https://reddit.com/r/dramatiq <br/>
+**Documentation**: https://dramatiq.io <br/>
+**Professional Support**: [https://tidelift.com](https://tidelift.com/subscription/pkg/pypi-dramatiq?utm_source=pypi-dramatiq&utm_medium=referral&utm_campaign=readme)
+
+<hr/>
+
+## Installation
+
+If you want to use it with [RabbitMQ]
+
+    pipenv install 'dramatiq[rabbitmq, watch]'
+
+or if you want to use it with [Redis]
+
+    pipenv install 'dramatiq[redis, watch]'
+
+
+## Quickstart
+
+Make sure you've got [RabbitMQ] running, then create a new file called
+`example.py`:
 
 ``` python
 import dramatiq
 import requests
+import sys
 
 @dramatiq.actor
 def count_words(url):
-   response = requests.get(url)
-   count = len(response.text.split(" "))
-   print(f"There are {count} words at {url!r}.")
+    response = requests.get(url)
+    count = len(response.text.split(" "))
+    print(f"There are {count} words at {url!r}.")
 
-# Synchronously count the words on example.com in the current process
-count_words("http://example.com")
 
-# or send the actor a message so that it may perform the count
-# later, in a separate process.
-count_words.send("http://example.com")
+if __name__ == "__main__":
+    count_words.send(sys.argv[1])
 ```
 
-## Installation
+In one terminal, run your workers:
 
-If you want to use it with [RabbitMQ][rabbit]
+    dramatiq example
 
-    pip install -U dramatiq[rabbitmq, watch]
+In another, start enqueueing messages:
 
-or if you want to use it with [Redis][redis]
+    python example.py http://example.com
+    python example.py https://github.com
+    python example.py https://news.ycombinator.com
 
-    pip install -U dramatiq[redis, watch]
+Check out the [user guide] to learn more!
 
-## Documentation
-
-Documentation is available at http://dramatiq.io
 
 ## License
 
-dramatiq is licensed under the AGPL.  Please see [LICENSE][license]
-for licensing details.
-
-Commercial licensing options are available [upon request][commercial].
+dramatiq is licensed under the LGPL.  Please see [COPYING] and
+[COPYING.LESSER] for licensing details.
 
 
-[commercial]: https://dramatiq.io/commercial.html
-[license]: https://github.com/Bogdanp/dramatiq/blob/master/LICENSE
-[rabbit]: https://www.rabbitmq.com/
-[redis]: https://redis.io
+[COPYING.LESSER]: https://github.com/Bogdanp/dramatiq/blob/master/COPYING.LESSER
+[COPYING]: https://github.com/Bogdanp/dramatiq/blob/master/COPYING
+[RabbitMQ]: https://www.rabbitmq.com/
+[Redis]: https://redis.io
+[user guide]: https://dramatiq.io/guide.html

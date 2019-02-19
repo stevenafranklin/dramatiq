@@ -40,16 +40,20 @@ Messages
 Message Persistence
 ^^^^^^^^^^^^^^^^^^^
 
-Dramatiq has at-least-once message delivery semantics.  Messages sent
-to Dramatiq brokers are persisted to disk and survive across broker
-reboots.  Exactly how often messages are written to disk depends on
-your broker.
+Messages sent to Dramatiq brokers are persisted to disk and survive
+across broker reboots.  Exactly how often messages are flushed to disk
+depends on your broker.
 
 Messages that have been pulled by workers but not processed are
-returned to the broker on shutdown and any messages that are in flight
-while a worker is terminated (eg. via ``SIGKILL``) are going to be
-redelivered later.  Messages are only ever acknowledged to the broker
-when they have finished being processed.
+returned to the broker on graceful shutdown and any messages that are
+in flight when a worker is terminated are going to be redelivered
+later.  Messages are only ever acknowledged to (removed from) the
+broker after they have been successfully processed.
+
+When a worker goes down while processing messages (eg. due to
+hardware, power or network failure) then the messages it pulled from
+the broker will eventually be re-delivered to it (assuming it
+recovers) or another worker.
 
 Message Results
 ^^^^^^^^^^^^^^^
@@ -58,6 +62,45 @@ Dramatiq can store actor return values to Memcached and Redis by
 leveraging the |Results| middleware.  In most cases you can get by
 without needing this capability so the middleware is not turned on by
 default.  When you do need it, however, it's there.
+
+.. _message-interrupts:
+
+Message Interrupts
+^^^^^^^^^^^^^^^^^^
+
+Dramatiq may interrupt message processing mid-execution.  This is
+achieved by asynchronously raising an exception in the worker thread
+that is currently processing the message.
+
+.. attention::
+   Currently, interrupts are only supported on CPython and are subject
+   to the restrictions of the GIL.  This means the interrupt exception
+   will only be raised the next time that thread acquires the GIL, and
+   they are unable to cancel system calls.
+
+Interrupts are used by the following middleware:
+
+* |ShutdownNotifications| (raises |Shutdown|)
+* |TimeLimit| (raises |TimeLimitExceeded|)
+
+In order to gracefully handle interrupts, wrap the code in a try/except
+block, catching the appropriate exception type.  To attempt to requeue
+the message, raise an exception to indicate failure.
+
+.. code-block:: python
+
+   import dramatiq
+   from dramatiq.middleware import Interrupt
+
+   @dramatiq.actor(max_retries=3, notify_shutdown=True)
+   def long_running_task():
+       try:
+           setup()
+           do_work()
+       except Shutdown:
+           cleanup()
+           raise
+
 
 Enqueueing Messages from Other Languages
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -110,6 +153,7 @@ Code   Description
 ``1``  Returned when the process is killed.
 ``2``  Returned when a module cannot be imported or when a command line argument is invalid.
 ``3``  Returned when a broker connection cannot be established during worker startup.
+``4``  Returned when a PID file is set and Dramatiq is already running.
 =====  ========================================================================================
 
 Controlling Workers
@@ -191,9 +235,27 @@ The following metrics are exported:
 
 All metrics define labels for ``queue_name`` and ``actor_name``.
 
-Grafana
-~~~~~~~
+Grafana Dashboard
+~~~~~~~~~~~~~~~~~
 
 You can find a Grafana dashboard that displays these metrics here_.
 
 .. _here: https://grafana.com/dashboards/3692
+
+Gotchas with Prometheus
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The Prometheus client for Python is a bit finicky when it comes to
+exporting metrics from a multi-process configuration.  If your own app
+uses Prometheus, then you should export ``prometheus_multiproc_dir``
+and ``dramatiq_prom_db`` environment variables -- both pointing to an
+existing folder -- and remove any files in that folder before running
+Dramatiq.  For example::
+
+  mkdir -p /tmp/dramatiq-prometheus \
+    && rm -r /tmp/dramatiq-prometheus/* \
+    && env prometheus_multiproc_dir=/tmp/dramatiq-prometheus \
+           dramatiq_prom_db=/tmp/dramatiq-prometheus \
+           dramatiq app
+
+If you don't do this, then metrics will likely fail to export properly.

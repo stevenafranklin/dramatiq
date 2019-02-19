@@ -1,8 +1,25 @@
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+import time
 from itertools import chain
-from queue import Queue, Empty
+from queue import Empty, Queue
 
 from ..broker import Broker, Consumer, MessageProxy
-from ..common import current_millis, dq_name, iter_queue
+from ..common import current_millis, dq_name, iter_queue, join_queue
 from ..errors import QueueNotFound
 from ..message import Message
 
@@ -94,7 +111,7 @@ class StubBroker(Broker):
           queue_name(str): The queue to flush.
         """
         for _ in iter_queue(self.queues[queue_name]):
-            pass
+            self.queues[queue_name].task_done()
 
     def flush_all(self):
         """Drop all messages from all declared queues.
@@ -102,20 +119,35 @@ class StubBroker(Broker):
         for queue_name in chain(self.queues, self.delay_queues):
             self.flush(queue_name)
 
-    def join(self, queue_name):
+    def join(self, queue_name, *, timeout=None):
         """Wait for all the messages on the given queue to be
         processed.  This method is only meant to be used in tests
         to wait for all the messages in a queue to be processed.
 
+        Raises:
+          QueueJoinTimeout: When the timeout elapses.
+          QueueNotFound: If the given queue was never declared.
+
         Parameters:
           queue_name(str): The queue to wait on.
-
-        Raises:
-          QueueNotFound: If the given queue was never declared.
+          timeout(Optional[int]): The max amount of time, in
+            milliseconds, to wait on this queue.
         """
         try:
-            for queue_name in (queue_name, dq_name(queue_name)):
-                self.queues[queue_name].join()
+            deadline = timeout and time.monotonic() + timeout / 1000
+            while True:
+                for name in [queue_name, dq_name(queue_name)]:
+                    timeout = deadline and deadline - time.monotonic()
+                    join_queue(self.queues[name], timeout=timeout)
+
+                # We cycle through $queue then $queue.DQ then $queue
+                # again in case the messages that were on the DQ got
+                # moved back on $queue.
+                for name in [queue_name, dq_name(queue_name)]:
+                    if self.queues[name].unfinished_tasks:
+                        break
+                else:
+                    return
         except KeyError:
             raise QueueNotFound(queue_name)
 
@@ -132,9 +164,6 @@ class _StubConsumer(Consumer):
     def nack(self, message):
         self.queue.task_done()
         self.dead_letters.append(message)
-
-    def requeue(self, messages):
-        pass
 
     def __next__(self):
         try:

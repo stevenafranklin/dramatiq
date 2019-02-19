@@ -7,6 +7,10 @@ def rel(*xs):
     return os.path.join(os.path.abspath(os.path.dirname(__file__)), *xs)
 
 
+with open(rel("README.md")) as f:
+    long_description = f.read()
+
+
 with open(rel("dramatiq", "__init__.py"), "r") as f:
     version_marker = "__version__ = "
     for line in f:
@@ -18,39 +22,63 @@ with open(rel("dramatiq", "__init__.py"), "r") as f:
         raise RuntimeError("Version marker not found.")
 
 
-def parse_dependencies(filename):
-    with open(rel("requirements", filename)) as reqs:
-        for line in reqs:
-            line = line.strip()
-            if line.startswith("#"):
-                continue
+dependencies = [
+    "prometheus-client>=0.2,<0.3",
+]
 
-            elif line.startswith("-r"):
-                yield from parse_dependencies(line[len("-r "):])
+extra_dependencies = {
+    "memcached": [
+        "pylibmc>=1.5,<2.0",
+    ],
 
-            else:
-                yield line
+    "rabbitmq": [
+        "pika>=0.13,<0.14",
+    ],
 
+    "redis": [
+        "redis>=2.0,<4.0",
+    ],
 
-dependencies = list(parse_dependencies("common.txt"))
-
-extras = ("memcached", "rabbitmq", "redis", "watch")
-extra_dependencies = {}
-for extra in extras:
-    filename = extra + ".txt"
-    extra_dependencies[extra] = list(parse_dependencies(filename))
+    "watch": [
+        "watchdog>=0.8,<0.9",
+        "watchdog_gevent==0.1",
+    ],
+}
 
 extra_dependencies["all"] = list(set(sum(extra_dependencies.values(), [])))
-extra_dependencies[""] = list(set(
-    extra_dependencies["rabbitmq"] +
-    extra_dependencies["watch"]
-))
+extra_dependencies["dev"] = extra_dependencies["all"] + [
+    # Docs
+    "alabaster",
+    "sphinx<1.8",
+    "sphinxcontrib-napoleon",
+
+    # Linting
+    "flake8",
+    "flake8-bugbear",
+    "flake8-quotes",
+    "isort",
+
+    # Misc
+    "bumpversion",
+    "hiredis",
+    "twine",
+    "wheel",
+
+    # Testing
+    "pytest<4",
+    "pytest-benchmark[histogram]",
+    "pytest-cov",
+    "tox",
+]
 
 setup(
     name="dramatiq",
     version=version,
-    description="A distributed task processing library.",
-    long_description="Visit http://dramatiq.io for more information.",
+    author="Bogdan Popa",
+    author_email="bogdan@cleartype.io",
+    description="Background Processing for Python 3.",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     packages=[
         "dramatiq",
         "dramatiq.brokers",
@@ -72,6 +100,6 @@ setup(
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3 :: Only",
         "Topic :: System :: Distributed Computing",
-        "License :: OSI Approved :: GNU Affero General Public License v3",
+        "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
     ],
 )

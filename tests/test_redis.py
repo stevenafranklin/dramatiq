@@ -1,9 +1,14 @@
-import dramatiq
-import pytest
 import time
 
-from dramatiq import Message, Worker
+import pytest
+import redis
+
+import dramatiq
+from dramatiq import Message, QueueJoinTimeout
+from dramatiq.brokers.redis import MAINTENANCE_SCALE, RedisBroker
 from dramatiq.common import current_millis, dq_name, xq_name
+
+from .common import worker
 
 
 def test_redis_actors_can_be_sent_messages(redis_broker, redis_worker):
@@ -96,7 +101,7 @@ def test_redis_actors_can_have_their_messages_delayed(redis_broker, redis_worker
     assert run_time - start_time >= 1000
 
 
-def test_redis_actors_can_delay_messages_independent_of_each_other(redis_broker, redis_worker):
+def test_redis_actors_can_delay_messages_independent_of_each_other(redis_broker):
     # Given that I have a database
     results = []
 
@@ -105,18 +110,23 @@ def test_redis_actors_can_delay_messages_independent_of_each_other(redis_broker,
     def append(x):
         results.append(x)
 
-    # If I send it a delayed message
-    append.send_with_options(args=(1,), delay=2000)
+    # When I pause the worker
+    with worker(redis_broker, worker_timeout=100, worker_threads=1) as redis_worker:
+        redis_worker.pause()
 
-    # And then another delayed message with a smaller delay
-    append.send_with_options(args=(2,), delay=1000)
+        # And I send it a delayed message
+        append.send_with_options(args=(1,), delay=2000)
 
-    # Then join on the queue
-    redis_broker.join(append.queue_name)
-    redis_worker.join()
+        # And then another delayed message with a smaller delay
+        append.send_with_options(args=(2,), delay=1000)
 
-    # I expect the latter message to have been run first
-    assert results == [2, 1]
+        # Then resume the worker and join on the queue
+        redis_worker.resume()
+        redis_broker.join(append.queue_name)
+        redis_worker.join()
+
+        # I expect the latter message to have been run first
+        assert results == [2, 1]
 
 
 def test_redis_unacked_messages_can_be_requeued(redis_broker):
@@ -127,26 +137,30 @@ def test_redis_unacked_messages_can_be_requeued(redis_broker):
     # If I enqueue two messages
     message_ids = [b"message-1", b"message-2"]
     for message_id in message_ids:
-        redis_broker._enqueue(queue_name, message_id, b"message-data")
+        redis_broker.do_enqueue(queue_name, message_id, b"message-data")
 
-    # And then fetch them one second apart
-    redis_broker._fetch(queue_name, 1)
-    time.sleep(1)
-    redis_broker._fetch(queue_name, 1)
+    # And then fetch them
+    redis_broker.do_fetch(queue_name, 1)
+    redis_broker.do_fetch(queue_name, 1)
 
-    # I expect both to be in the acks set
-    unacked = redis_broker.client.zrangebyscore("dramatiq:%s.acks" % queue_name, 0, "+inf")
+    # Then both must be in the acks set
+    ack_group = "dramatiq:__acks__.%s.%s" % (redis_broker.broker_id, queue_name)
+    unacked = redis_broker.client.smembers(ack_group)
     assert sorted(unacked) == sorted(message_ids)
 
-    # If I then set the requeue deadline to 1 second and run a requeue
-    redis_broker.requeue_deadline = 1000
-    redis_broker._requeue()
+    # When I close that broker and open another and dispatch a command
+    redis_broker.broker_id = "some-other-id"
+    redis_broker.heartbeat_timeout = 0
+    redis_broker.maintenance_chance = MAINTENANCE_SCALE
+    redis_broker.do_qsize(queue_name)
 
-    # I expect only the first message to have been moved
-    unacked = redis_broker.client.zrangebyscore("dramatiq:%s.acks" % queue_name, 0, "+inf")
-    queued = redis_broker.client.lrange("dramatiq:%s" % queue_name, 0, 1)
-    assert unacked == message_ids[1:]
-    assert queued == message_ids[:1]
+    # Then both messages should be requeued
+    ack_group = "dramatiq:__acks__.%s.%s" % (redis_broker.broker_id, queue_name)
+    unacked = redis_broker.client.smembers(ack_group)
+    assert not unacked
+
+    queued = redis_broker.client.lrange("dramatiq:%s" % queue_name, 0, 5)
+    assert set(message_ids) == set(queued)
 
 
 def test_redis_messages_can_be_dead_lettered(redis_broker, redis_worker):
@@ -174,16 +188,19 @@ def test_redis_dead_lettered_messages_are_cleaned_up(redis_broker, redis_worker)
     def do_work():
         raise RuntimeError("failed")
 
-    # If I send it a message
+    # When I send it a message
     do_work.send()
 
     # And then join on its queue
     redis_broker.join(do_work.queue_name)
     redis_worker.join()
 
-    # I expect running the cleanup script to remove it
+    # And trigger maintenance
     redis_broker.dead_message_ttl = 0
-    redis_broker._cleanup()
+    redis_broker.maintenance_chance = MAINTENANCE_SCALE
+    redis_broker.do_qsize(do_work.queue_name)
+
+    # Then the message should be removed from the DLQ.
     dead_queue_name = "dramatiq:%s" % xq_name(do_work.queue_name)
     dead_ids = redis_broker.client.zrangebyscore(dead_queue_name, 0, "+inf")
     assert not dead_ids
@@ -206,21 +223,9 @@ def test_redis_messages_belonging_to_missing_actors_are_rejected(redis_broker, r
     redis_worker.join()
 
     # I expect the message to end up on the dead letter queue
-    dead_queue_name = "dramatiq:%s" % xq_name('some-queue')
+    dead_queue_name = "dramatiq:%s" % xq_name("some-queue")
     dead_ids = redis_broker.client.zrangebyscore(dead_queue_name, 0, "+inf")
     assert message.options["redis_message_id"].encode("utf-8") in dead_ids
-
-
-def test_redis_raises_an_exception_when_delaying_messages_for_too_long(redis_broker):
-    # Given that I have an actor
-    @dramatiq.actor
-    def do_nothing():
-        pass
-
-    # If I try to send it a delayed message farther than 7 days into the future
-    # I expect it to raise a value error
-    with pytest.raises(ValueError):
-        do_nothing.send_with_options(delay=7 * 86400 * 1000 + 1)
 
 
 def test_redis_requeues_unhandled_messages_on_shutdown(redis_broker):
@@ -234,10 +239,8 @@ def test_redis_requeues_unhandled_messages_on_shutdown(redis_broker):
     message_2 = do_work.send()
 
     # Then start a worker and subsequently shut it down
-    worker = Worker(redis_broker, worker_threads=1)
-    worker.start()
-    time.sleep(0.25)
-    worker.stop()
+    with worker(redis_broker, worker_threads=1):
+        time.sleep(0.25)
 
     # I expect it to have processed one of the messages and re-enqueued the other
     messages = redis_broker.client.lrange("dramatiq:%s" % do_work.queue_name, 0, 10)
@@ -258,10 +261,97 @@ def test_redis_requeues_unhandled_delay_messages_on_shutdown(redis_broker):
     message = do_work.send_with_options(delay=10000)
 
     # Then start a worker and subsequently shut it down
-    worker = Worker(redis_broker, worker_threads=1)
-    worker.start()
-    worker.stop()
+    with worker(redis_broker, worker_threads=1):
+        pass
 
     # I expect it to have re-enqueued the message
     messages = redis_broker.client.lrange("dramatiq:%s" % dq_name(do_work.queue_name), 0, 10)
     assert message.options["redis_message_id"].encode("utf-8") in messages
+
+
+def test_redis_broker_can_join_with_timeout(redis_broker, redis_worker):
+    # Given that I have an actor that takes a long time to run
+    @dramatiq.actor
+    def do_work():
+        time.sleep(1)
+
+    # When I send that actor a message
+    do_work.send()
+
+    # And join on its queue with a timeout
+    # Then I expect a QueueJoinTimeout to be raised
+    with pytest.raises(QueueJoinTimeout):
+        redis_broker.join(do_work.queue_name, timeout=500)
+
+
+def test_redis_broker_can_flush_queues(redis_broker):
+    # Given that I have an actor
+    @dramatiq.actor
+    def do_work():
+        pass
+
+    # When I send that actor a message
+    do_work.send()
+
+    # And then tell the broker to flush all queues
+    redis_broker.flush_all()
+
+    # And then join on the actors's queue
+    # Then it should join immediately
+    assert redis_broker.join(do_work.queue_name, timeout=200) is None
+
+
+def test_redis_broker_can_connect_via_url():
+    # Given that I have a connection string
+    # When I pass that to RedisBroker
+    broker = RedisBroker(url="redis://127.0.0.1")
+
+    # Then I should get back a valid connection
+    assert broker.client.ping()
+
+
+def test_redis_broker_warns_about_deprecated_parameters():
+    # When I pass deprecated params to RedisBroker
+    # Then it should warn me that those params do nothing
+    with pytest.warns(DeprecationWarning) as record:
+        RedisBroker(requeue_deadline=1000)
+
+    assert str(record[0].message) == \
+        "requeue_{deadline,interval} have been deprecated and no longer do anything"
+
+
+def test_redis_broker_raises_attribute_error_when_given_an_invalid_attribute(redis_broker):
+    # Given that I have a Redis broker
+    # When I try to access an attribute that doesn't exist
+    # Then I should get back an attribute error
+    with pytest.raises(AttributeError):
+        redis_broker.idontexist
+
+
+def test_redis_broker_maintains_backwards_compat_with_old_acks(redis_broker):
+    # Given that I have an actor
+    @dramatiq.actor
+    def do_work(self):
+        pass
+
+    # And that actor has some old-style unacked messages
+    expired_message_id = b"expired-old-school-ack"
+    valid_message_id = b"valid-old-school-ack"
+    if redis.__version__.startswith("2."):
+        redis_broker.client.zadd("dramatiq:default.acks", 0, expired_message_id)
+        redis_broker.client.zadd("dramatiq:default.acks", current_millis(), valid_message_id)
+    else:
+        redis_broker.client.zadd("dramatiq:default.acks", {expired_message_id: 0})
+        redis_broker.client.zadd("dramatiq:default.acks", {valid_message_id: current_millis()})
+
+    # When maintenance runs for that actor's queue
+    redis_broker.maintenance_chance = MAINTENANCE_SCALE
+    redis_broker.do_qsize(do_work.queue_name)
+
+    # Then maintenance should move the expired message to the new style acks set
+    unacked = redis_broker.client.smembers("dramatiq:__acks__.%s.default" % redis_broker.broker_id)
+    assert set(unacked) == {expired_message_id}
+
+    # And the valid message should stay in that set
+    compat_unacked = redis_broker.client.zrangebyscore("dramatiq:default.acks", 0, "+inf")
+    assert set(compat_unacked) == {valid_message_id}

@@ -1,11 +1,14 @@
-import dramatiq
-import pytest
 import random
 import time
 
+import pytest
+
+import dramatiq
 from dramatiq.brokers.rabbitmq import RabbitmqBroker
 
-broker = RabbitmqBroker()
+from ..common import skip_on_travis
+
+broker = RabbitmqBroker(host="127.0.0.1")
 
 
 @dramatiq.actor(queue_name="benchmark-throughput", broker=broker)
@@ -38,6 +41,7 @@ def latency():
         time.sleep(duration)
 
 
+@skip_on_travis
 @pytest.mark.benchmark(group="rabbitmq-100k-throughput")
 def test_rabbitmq_process_100k_messages_with_cli(benchmark, info_logging, start_cli):
     # Given that I've loaded 100k messages into RabbitMQ
@@ -57,6 +61,7 @@ def test_rabbitmq_process_100k_messages_with_cli(benchmark, info_logging, start_
     benchmark.pedantic(broker.join, args=(throughput.queue_name,), setup=setup)
 
 
+@skip_on_travis
 @pytest.mark.benchmark(group="rabbitmq-10k-fib")
 def test_rabbitmq_process_10k_fib_with_cli(benchmark, info_logging, start_cli):
     # Given that I've loaded 10k messages into RabbitMQ
@@ -76,6 +81,7 @@ def test_rabbitmq_process_10k_fib_with_cli(benchmark, info_logging, start_cli):
     benchmark.pedantic(broker.join, args=(fib.queue_name,), setup=setup)
 
 
+@skip_on_travis
 @pytest.mark.benchmark(group="rabbitmq-1k-latency")
 def test_rabbitmq_process_1k_latency_with_cli(benchmark, info_logging, start_cli):
     # Given that I've loaded 1k messages into RabbitMQ

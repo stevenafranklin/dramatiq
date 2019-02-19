@@ -1,12 +1,26 @@
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 from .errors import ActorNotFound
 from .logging import get_logger
-from .middleware import MiddlewareError, AgeLimit, Callbacks, Prometheus, Retries, TimeLimit
+from .middleware import MiddlewareError, default_middleware
 
 #: The global broker instance.
 global_broker = None
-
-#: The list of middleware that are enabled by default.
-default_middleware = [Prometheus, AgeLimit, TimeLimit, Callbacks, Retries]
 
 
 def get_broker() -> "Broker":
@@ -63,7 +77,9 @@ class Broker:
         self.actor_options = set()
         self.middleware = []
 
-        middleware = middleware or [m() for m in default_middleware]
+        if middleware is None:
+            middleware = [m() for m in default_middleware]
+
         for m in middleware:
             self.add_middleware(m)
 
@@ -71,7 +87,7 @@ class Broker:
         for middleware in self.middleware:
             try:
                 getattr(middleware, "before_" + signal)(self, *args, **kwargs)
-            except MiddlewareError as e:
+            except MiddlewareError:
                 raise
             except Exception:
                 self.logger.critical("Unexpected failure in before_%s.", signal, exc_info=True)
@@ -103,7 +119,7 @@ class Broker:
             "provide either 'before' or 'after', but not both"
 
         if before or after:
-            for i, m in enumerate(self.middleware):
+            for i, m in enumerate(self.middleware):  # noqa
                 if isinstance(m, before or after):
                     break
             else:
@@ -224,6 +240,24 @@ class Broker:
         """
         return self.delay_queues.copy()
 
+    def flush(self, queue_name):  # pragma: no cover
+        """Drop all the messages from a queue.
+
+        Parameters:
+          queue_name(str): The name of the queue to flush.
+        """
+        raise NotImplementedError()
+
+    def flush_all(self):  # pragma: no cover
+        """Drop all messages from all declared queues.
+        """
+        raise NotImplementedError()
+
+    def join(self, queue_name, *, timeout=None):  # pragma: no cover
+        """
+        """
+        raise NotImplementedError()
+
 
 class Consumer:
     """Consumers iterate over messages on a queue.
@@ -255,12 +289,12 @@ class Consumer:
 
     def requeue(self, messages):  # pragma: no cover
         """Move unacked messages back to their queues.  This is called
-        by consumer threads when they fail or are shut down.
+        by consumer threads when they fail or are shut down.  The
+        default implementation does nothing.
 
         Parameters:
           messages(list[MessageProxy]): The messages to requeue.
         """
-        raise NotImplementedError
 
     def __next__(self):  # pragma: no cover
         """Retrieve the next message off of the queue.  This method
@@ -272,10 +306,6 @@ class Consumer:
           processed.
         """
         raise NotImplementedError
-
-    def interrupt(self):
-        """Wake up the consumer if it is idling.
-        """
 
     def close(self):
         """Close this consumer and perform any necessary cleanup actions.

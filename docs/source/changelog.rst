@@ -10,6 +10,310 @@ All notable changes to this project will be documented in this file.
 -------------
 
 
+`1.5.0`_ -- 2019-02-18
+----------------------
+
+Added
+^^^^^
+
+* The RabbitMQ broker now supports native message priorities.  (`#157`_, `@davidt99`_)
+* Support for specifying the actor class to |actor|.  (`#169`_, `@gilbsgilbs`_)
+
+.. _#157: https://github.com/Bogdanp/dramatiq/pull/157
+.. _#169: https://github.com/Bogdanp/dramatiq/pull/169
+.. _@davidt99: https://github.com/davidt99
+.. _@gilbsgilbs: https://github.com/gilbsgilbs
+
+Changed
+^^^^^^^
+
+* Pika 0.13 is now required.
+
+Fixed
+^^^^^
+
+* Consumers are now stopped after workers finish running their tasks.  (`#160`_, `@brownan`_)
+* Worker logging on Python 3.7 is no longer delayed.
+
+.. _#160: https://github.com/Bogdanp/dramatiq/pull/160
+.. _@brownan: https://github.com/brownan
+
+
+`1.4.3`_ -- 2019-01-08
+----------------------
+
+Fixed
+^^^^^
+
+* Changed license classifier to the correct license.  This is why you
+  shouldn't publish changed before you've had coffee, folks!
+
+
+`1.4.2`_ -- 2019-01-08
+----------------------
+
+Fixed
+^^^^^
+
+* License classifier in PyPI package.  There were no source code
+  changes for this release.
+
+
+`1.4.1`_ -- 2018-12-30
+----------------------
+
+Added
+^^^^^
+
+* Support for redis-py 3.x.  (`#142`_, `@maerteijn`_)
+
+.. _#142: https://github.com/Bogdanp/dramatiq/pull/142
+.. _@maerteijn: https://github.com/maerteijn
+
+Fixed
+^^^^^
+
+* Workers wait for RMQ messages to be acked upon shutdown.  (`#148`_)
+* Pipelines no longer continue when a message is failed.  (`#151`_, `@davidt99`_)
+* Log files now work under Windows.  (`#141`_, `@ryansm1`_)
+
+.. _#141: https://github.com/Bogdanp/dramatiq/pull/141
+.. _#148: https://github.com/Bogdanp/dramatiq/issues/148
+.. _#151: https://github.com/Bogdanp/dramatiq/issues/151
+.. _@ryansm1: https://github.com/ryansm1
+.. _@davidt99: https://github.com/davidt99
+
+
+`1.4.0`_ -- 2018-11-25
+----------------------
+
+Added
+^^^^^
+
+* |Barriers|.
+
+Changed
+^^^^^^^
+
+* ``cli.main`` now takes an optional argument namespace so that users
+  may define their own entrypoints. (`#140`_, `@maerteijn`_)
+* Actor "message received" and "completed in x ms" log messages are
+  now logged with the ``DEBUG`` level instead of ``INFO`` level.  This
+  improves throughput and makes logging much less verbose.
+* The |TimeLimit| middleware no longer uses signals to trigger time
+  limit handling.  Instead it uses a background thread per worker
+  process.
+* Dramatiq now shuts itself down if any of the workers die
+  unexpectedly (for example, if one of them is killed by the OOM
+  killer).
+* Windows is now supported (with some caveats)! (`#119`_, `@ryansm1`_)
+
+Fixed
+^^^^^
+
+* Allow ``pipe_ignore`` option to be set at the actor level.  (`#100`_)
+* Result encoder now defaults to the global encoder.  (`#108`_, `@xdmiodz`_)
+* Dot characters are now allowed in queue names. (`#111`_)
+* Tests are now run on Windows. (`#113`_, `@ryansm1`_)
+
+.. _#100: https://github.com/Bogdanp/dramatiq/issues/100
+.. _#108: https://github.com/Bogdanp/dramatiq/issues/108
+.. _#111: https://github.com/Bogdanp/dramatiq/issues/111
+.. _#113: https://github.com/Bogdanp/dramatiq/issues/113
+.. _#119: https://github.com/Bogdanp/dramatiq/issues/119
+.. _#140: https://github.com/Bogdanp/dramatiq/issues/140
+.. _@maerteijn: https://github.com/maerteijn
+.. _@ryansm1: https://github.com/ryansm1
+.. _@xdmiodz: https://github.com/xdmiodz
+
+
+`1.3.0`_ -- 2018-07-05
+----------------------
+
+Changed
+^^^^^^^
+
+* Upgraded prometheus_client to 0.2.x.
+* Bumped pika to version 0.12.  Because of this change, the
+  ``interrupt`` method on |Broker| and its usages within |Worker| have
+  been dropped.
+* There is no longer a max message delay.
+
+Fixed
+^^^^^
+
+* |Brokers| can now be passed an empty list of middleware.  (`#90`_)
+* Potential stack overflow when restarting Consumer threads.  (`#89`_)
+
+.. _#89: https://github.com/Bogdanp/dramatiq/issues/89
+.. _#90: https://github.com/Bogdanp/dramatiq/issues/90
+
+
+`1.2.0`_ -- 2018-05-24
+----------------------
+
+Added
+^^^^^
+
+* Support for worker heartbeats to |RedisBroker|.
+* ``maintenance_chance`` and ``heartbeat_timeout`` parameters to
+  |RedisBroker|.
+* |Interrupt| base class for thread-interrupting exceptions. (`@rpkilby`_)
+* |ShutdownNotifications| middleware. (`@rpkilby`_)
+
+Changed
+^^^^^^^
+
+* |TimeLimitExceeded| is now a subclass of |Interrupt|.
+
+Fixed
+^^^^^
+
+* |StubBroker_join| and |Worker_join| are now more reliable.
+* Module import path is now prepended to search path rather than
+  appended.  This fixes an issue where importing modules with the same
+  name as modules from site-packages would end up importing the
+  modules from site-packages. (`#88`_)
+* |Prometheus| middleware no longer wipes the prometheus data
+  directory on startup.  This fixes an issue with exporting
+  application metrics along with worker metrics.
+
+.. _#88: https://github.com/Bogdanp/dramatiq/issues/88
+
+Deprecated
+^^^^^^^^^^
+
+* ``requeue_{deadline,interval}`` parameters to |RedisBroker|.  These
+  two parameters no longer have any effect.
+
+.. _@rpkilby: https://github.com/rpkilby
+
+
+`1.1.0`_ -- 2018-04-17
+----------------------
+
+Added
+^^^^^
+
+* ``confirm_delivery`` parameter to |RabbitmqBroker|.
+* ``dead_message_ttl``, ``requeue_deadline`` and ``requeue_interval``
+  parameters to |RedisBroker|.
+* ``url`` parameter to |RedisRLBackend| rate limiter backend.
+* ``url`` parameter to |RedisResBackend| result backend.
+* ``timeout`` parameter to all the brokers' ``join`` methods.  (`#57`_)
+* ``flush`` and ``flush_all`` methods to |RedisBroker|.  (`#62`_)
+* ``flush`` and ``flush_all`` methods to |RabbitmqBroker|.  (`#62`_)
+
+Changed
+^^^^^^^
+
+* Cleaned up command line argument descriptions.
+
+Deprecated
+^^^^^^^^^^
+
+* |URLRabbitmqBroker| is deprecated.  The |RabbitmqBroker| takes a
+  ``url`` parameter so use that instead.  |URLRabbitmqBroker| will be
+  removed in version 2.0.
+
+Fixed
+^^^^^
+
+* ``rabbitmq`` and ``watch`` extra dependencies are only installed
+  when they are explicitly required now.  (`#60`_, `@rpkilby`_)
+* signal handling from the master process on FreeBSD 10.3.  (`#66`_)
+* reloading now uses ``sys.executable`` when exec'ing workers that
+  were started with ``python -m dramatiq``.
+* an issue that caused logging to fail when non-utf-8 characters were
+  printed to stdout/err.  (`#63`_)
+* an issue with potentially drifting keys in the |WindowRateLimiter|.
+  (`#69`_, `@gdvalle`_)
+
+.. _#57: https://github.com/Bogdanp/dramatiq/issues/57
+.. _#60: https://github.com/Bogdanp/dramatiq/issues/60
+.. _#62: https://github.com/Bogdanp/dramatiq/issues/62
+.. _#63: https://github.com/Bogdanp/dramatiq/issues/63
+.. _#66: https://github.com/Bogdanp/dramatiq/issues/66
+.. _#69: https://github.com/Bogdanp/dramatiq/issues/69
+.. _@rpkilby: https://github.com/rpkilby
+.. _@gdvalle: https://github.com/gdvalle
+
+
+`1.0.0`_ -- 2018-03-31
+----------------------
+
+Added
+^^^^^
+
+* ``--log-file`` command line argument.  (`#43`_, `@najamansari`_)
+* ``--pid-file`` command line argument.  (`#43`_, `@najamansari`_)
+
+.. _#43: https://github.com/Bogdanp/dramatiq/issues/43
+.. _@najamansari: https://github.com/najamansari
+
+Changed
+^^^^^^^
+
+* Dramatiq is now licensed under the LGPL.
+
+Fixed
+^^^^^
+
+* Passing ``time_limit`` in ``send_with_options``.  (`#44`_)
+
+.. _#44: https://github.com/Bogdanp/dramatiq/issues/44
+
+
+`0.20.0`_ -- 2018-03-17
+-----------------------
+
+Added
+^^^^^
+
+* ``--queues`` CLI argument.  (`#35`_)
+
+.. _#35: https://github.com/Bogdanp/dramatiq/pull/35
+
+Changed
+^^^^^^^
+
+* Unhandled errors within workers now print the full stack trace.
+  (`#42`_)
+
+.. _#42: https://github.com/Bogdanp/dramatiq/pull/42
+
+
+`0.19.1`_ -- 2018-03-08
+-----------------------
+
+Fixed
+^^^^^
+
+* Calling ``str`` on |Actor|.  (`#40`_, `@aequitas`_)
+
+.. _@aequitas: https://github.com/aequitas
+.. _#40: https://github.com/Bogdanp/dramatiq/pull/40
+
+
+`0.19.0`_ -- 2018-01-17
+-----------------------
+
+Added
+^^^^^
+
+* |group| and |pipeline|.
+* ``retry_when`` parameter to |Retries|.
+
+Changed
+^^^^^^^
+
+* |RateLimitExceeded| errors no longer log the full stack trace when
+  raised within workers.
+* Consumer connection errors no longer dump a stack trace.
+* Consumers now wait exactly 3 seconds between retries after a
+  connection error, rather than using exponential backoff.
+
+
 `0.18.0`_ -- 2018-01-06
 -----------------------
 
@@ -346,7 +650,19 @@ Changed
 * Capped prefetch counts to 65k.
 
 
-.. _Unreleased: https://github.com/Bogdanp/dramatiq/compare/v0.18.0...HEAD
+.. _Unreleased: https://github.com/Bogdanp/dramatiq/compare/v1.5.0...HEAD
+.. _1.5.0: https://github.com/Bogdanp/dramatiq/compare/v1.4.3...v1.5.0
+.. _1.4.3: https://github.com/Bogdanp/dramatiq/compare/v1.4.2...v1.4.3
+.. _1.4.2: https://github.com/Bogdanp/dramatiq/compare/v1.4.1...v1.4.2
+.. _1.4.1: https://github.com/Bogdanp/dramatiq/compare/v1.4.0...v1.4.1
+.. _1.4.0: https://github.com/Bogdanp/dramatiq/compare/v1.3.0...v1.4.0
+.. _1.3.0: https://github.com/Bogdanp/dramatiq/compare/v1.2.0...v1.3.0
+.. _1.2.0: https://github.com/Bogdanp/dramatiq/compare/v1.1.0...v1.2.0
+.. _1.1.0: https://github.com/Bogdanp/dramatiq/compare/v1.0.0...v1.1.0
+.. _1.0.0: https://github.com/Bogdanp/dramatiq/compare/v0.20.0...v1.0.0
+.. _0.20.0: https://github.com/Bogdanp/dramatiq/compare/v0.19.1...v0.20.0
+.. _0.19.1: https://github.com/Bogdanp/dramatiq/compare/v0.19.0...v0.19.1
+.. _0.19.0: https://github.com/Bogdanp/dramatiq/compare/v0.19.0...v0.19.0
 .. _0.18.0: https://github.com/Bogdanp/dramatiq/compare/v0.17.0...v0.18.0
 .. _0.17.0: https://github.com/Bogdanp/dramatiq/compare/v0.16.0...v0.17.0
 .. _0.16.0: https://github.com/Bogdanp/dramatiq/compare/v0.15.1...v0.16.0

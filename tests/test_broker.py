@@ -1,9 +1,11 @@
-import dramatiq
-import dramatiq.broker
 import pytest
 
+import dramatiq
+import dramatiq.broker
 from dramatiq.brokers.rabbitmq import RabbitmqBroker
-from dramatiq.middleware import Middleware, Prometheus
+from dramatiq.middleware import Middleware
+
+from .common import skip_on_windows
 
 
 class EmptyMiddleware(Middleware):
@@ -21,7 +23,10 @@ def test_broker_uses_rabbitmq_if_not_set():
     assert isinstance(broker, RabbitmqBroker)
 
 
+@skip_on_windows
 def test_broker_middleware_can_be_added_before_other_middleware(stub_broker):
+    from dramatiq.middleware import Prometheus
+
     # Given that I have a custom middleware
     empty_middleware = EmptyMiddleware()
 
@@ -32,7 +37,10 @@ def test_broker_middleware_can_be_added_before_other_middleware(stub_broker):
     assert stub_broker.middleware[0] == empty_middleware
 
 
+@skip_on_windows
 def test_broker_middleware_can_be_added_after_other_middleware(stub_broker):
+    from dramatiq.middleware import Prometheus
+
     # Given that I have a custom middleware
     empty_middleware = EmptyMiddleware()
 
@@ -53,7 +61,10 @@ def test_broker_middleware_can_fail_to_be_added_before_or_after_missing_middlewa
         stub_broker.add_middleware(empty_middleware, after=EmptyMiddleware)
 
 
+@skip_on_windows
 def test_broker_middleware_cannot_be_addwed_both_before_and_after(stub_broker):
+    from dramatiq.middleware import Prometheus
+
     # Given that I have a custom middleware
     empty_middleware = EmptyMiddleware()
 
@@ -61,3 +72,12 @@ def test_broker_middleware_cannot_be_addwed_both_before_and_after(stub_broker):
     # I expect an AssertionError to be raised
     with pytest.raises(AssertionError):
         stub_broker.add_middleware(empty_middleware, before=Prometheus, after=Prometheus)
+
+
+def test_can_instantiate_brokers_without_middleware():
+    # Given that I have an empty list of middleware
+    # When I pass that to the RMQ Broker
+    broker = RabbitmqBroker(middleware=[])
+
+    # Then I should get back a broker with not middleware
+    assert not broker.middleware

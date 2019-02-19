@@ -1,3 +1,20 @@
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 import time
 
 from .rate_limiter import RateLimiter
@@ -31,14 +48,14 @@ class WindowRateLimiter(RateLimiter):
         self.window = window
         self.window_millis = window * 1000
 
-    def _acquire(self):
+    def _get_keys(self):
         timestamp = int(time.time())
-        keys = ["%s@%s" % (self.key, timestamp - i) for i in range(self.window)]
+        return ["%s@%s" % (self.key, timestamp - i) for i in range(self.window)]
 
-        # TODO: This is susceptible to drift because the keys are
-        # never re-computed when CAS fails.
+    def _acquire(self):
+        keys = self._get_keys()
         return self.backend.incr_and_sum(
-            keys[0], keys, 1,
+            keys[0], self._get_keys, 1,
             maximum=self.limit,
             ttl=self.window_millis,
         )

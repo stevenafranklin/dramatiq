@@ -28,6 +28,14 @@ Class-based Actors
 .. autoclass:: GenericActor
    :members:
 
+Message Composition
+^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: group
+   :members:
+.. autoclass:: pipeline
+   :members:
+
 Message Encoders
 ^^^^^^^^^^^^^^^^
 
@@ -51,7 +59,6 @@ Brokers
 .. autoclass:: dramatiq.brokers.rabbitmq.RabbitmqBroker
    :members:
    :inherited-members:
-.. autofunction:: dramatiq.brokers.rabbitmq.URLRabbitmqBroker
 .. autoclass:: dramatiq.brokers.redis.RedisBroker
    :members:
    :inherited-members:
@@ -70,15 +77,33 @@ The following middleware are all enabled by default.
    :member-order: bysource
 .. autoclass:: dramatiq.middleware.AgeLimit
 .. autoclass:: dramatiq.middleware.Callbacks
+.. autoclass:: dramatiq.middleware.Pipelines
 .. autoclass:: dramatiq.middleware.Prometheus
 .. autoclass:: dramatiq.middleware.Retries
+.. autoclass:: dramatiq.middleware.ShutdownNotifications
 .. autoclass:: dramatiq.middleware.TimeLimit
-.. autoclass:: dramatiq.middleware.TimeLimitExceeded
 
 Errors
 ^^^^^^
 
+The class hierarchy for middleware exceptions:
+
+.. code-block:: none
+
+    BaseException
+    +-- Exception
+    |   +-- dramatiq.middleware.MiddlewareError
+    |       +-- dramatiq.middleware.SkipMessage
+    +-- dramatiq.middleware.Interrupt
+        +-- dramatiq.middleware.Shutdown
+        +-- dramatiq.middleware.TimeLimitExceeded
+
+
+.. autoclass:: dramatiq.middleware.MiddlewareError
 .. autoclass:: dramatiq.middleware.SkipMessage
+.. autoclass:: dramatiq.middleware.Interrupt
+.. autoclass:: dramatiq.middleware.TimeLimitExceeded
+.. autoclass:: dramatiq.middleware.Shutdown
 
 
 Results
@@ -130,6 +155,12 @@ Limiters
 .. autoclass:: dramatiq.rate_limits.BucketRateLimiter
 .. autoclass:: dramatiq.rate_limits.ConcurrentRateLimiter
 .. autoclass:: dramatiq.rate_limits.WindowRateLimiter
+
+Barriers
+^^^^^^^^
+
+.. autoclass:: dramatiq.rate_limits.Barrier
+   :members:
 
 
 Workers

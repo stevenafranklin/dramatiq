@@ -1,12 +1,14 @@
-import dramatiq
-import platform
-import pytest
 import time
+from unittest.mock import patch
 
-from dramatiq import Message, Middleware, Worker
+import pytest
+
+import dramatiq
+from dramatiq import Message, Middleware
+from dramatiq.errors import RateLimitExceeded
 from dramatiq.middleware import SkipMessage
 
-_current_platform = platform.python_implementation()
+from .common import skip_on_pypy, worker
 
 
 def test_actors_can_be_defined(stub_broker):
@@ -17,6 +19,20 @@ def test_actors_can_be_defined(stub_broker):
 
     # I expect that function to become an instance of Actor
     assert isinstance(add, dramatiq.Actor)
+
+
+def test_actors_can_be_declared_with_actor_class(stub_broker):
+    # Given that I have a non-standard Actor class
+    class ActorChild(dramatiq.Actor):
+        pass
+
+    # When I define an actor with that class
+    @dramatiq.actor(actor_class=ActorChild)
+    def add(x, y):
+        return x + y
+
+    # Then that actor should be an instance of ActorChild
+    assert isinstance(add, ActorChild)
 
 
 def test_actors_can_be_assigned_predefined_options(stub_broker):
@@ -168,14 +184,14 @@ def test_actors_retry_a_max_number_of_times_on_failure(stub_broker, stub_worker)
         attempts.append(1)
         raise RuntimeError("failure")
 
-    # If I send it a message
+    # When I send it a message
     do_work.send()
 
-    # Then join on the queue
+    # And join on the queue
     stub_broker.join(do_work.queue_name)
     stub_worker.join()
 
-    # I expect successes
+    # Then I expect 4 attempts to have occurred
     assert sum(attempts) == 4
 
 
@@ -189,18 +205,18 @@ def test_actors_retry_for_a_max_time(stub_broker, stub_worker):
         attempts.append(1)
         raise RuntimeError("failure")
 
-    # If I send it a message
+    # When I send it a message
     do_work.send()
 
-    # Then join on the queue
+    # And join on the queue
     stub_broker.join(do_work.queue_name)
     stub_worker.join()
 
-    # I expect successes
+    # Then I expect at least one attempt to have occurred
     assert sum(attempts) >= 1
 
 
-@pytest.mark.skipif(_current_platform == "PyPy", reason="Time limits are not supported under PyPy.")
+@skip_on_pypy
 def test_actors_can_be_assigned_time_limits(stub_broker, stub_worker):
     # Given that I have a database
     attempts, successes = [], []
@@ -209,11 +225,35 @@ def test_actors_can_be_assigned_time_limits(stub_broker, stub_worker):
     @dramatiq.actor(max_retries=0, time_limit=1000)
     def do_work():
         attempts.append(1)
+        time.sleep(3)
+        successes.append(1)
+
+    # When I send it a message
+    do_work.send()
+
+    # And join on the queue
+    stub_broker.join(do_work.queue_name)
+    stub_worker.join()
+
+    # Then I expect it to fail
+    assert sum(attempts) == 1
+    assert sum(successes) == 0
+
+
+@skip_on_pypy
+def test_actor_messages_can_be_assigned_time_limits(stub_broker, stub_worker):
+    # Given that I have a database
+    attempts, successes = [], []
+
+    # And an actor without an explicit time limit
+    @dramatiq.actor(max_retries=0)
+    def do_work():
+        attempts.append(1)
         time.sleep(2)
         successes.append(1)
 
-    # If I send it a message
-    do_work.send()
+    # If I send it a message with a custom time limit
+    do_work.send_with_options(time_limit=1000)
 
     # Then join on the queue
     stub_broker.join(do_work.queue_name)
@@ -233,19 +273,19 @@ def test_actors_can_be_assigned_message_age_limits(stub_broker):
     def do_work():
         runs.append(1)
 
-    # If I send it a message
+    # When I send it a message
     do_work.send()
 
-    # And join on its queue after the age limit has passed
+    # And wait for its age limit to pass
     time.sleep(0.1)
-    worker = Worker(stub_broker, worker_timeout=100)
-    worker.start()
-    stub_broker.join(do_work.queue_name)
-    worker.join()
-    worker.stop()
 
-    # I expect the message to have been skipped
-    assert sum(runs) == 0
+    # Then join on its queue
+    with worker(stub_broker, worker_timeout=100) as stub_worker:
+        stub_broker.join(do_work.queue_name)
+        stub_worker.join()
+
+        # I expect the message to have been skipped
+        assert sum(runs) == 0
 
 
 def test_actors_can_delay_messages_independent_of_each_other(stub_broker, stub_worker):
@@ -371,8 +411,8 @@ def test_workers_can_be_paused(stub_broker, stub_worker):
     # When I send that actor a message
     track_call.send()
 
-    # And wait for half a second
-    time.sleep(0.5)
+    # And wait for 100ms
+    time.sleep(0.1)
 
     # Then no calls should be made
     assert calls == []
@@ -386,29 +426,110 @@ def test_workers_can_be_paused(stub_broker, stub_worker):
     assert calls == [1]
 
 
-def test_actors_can_prioritize_work(stub_broker, stub_worker):
-    # Given that I a paused worker
-    stub_worker.pause()
+def test_actors_can_prioritize_work(stub_broker):
+    with worker(stub_broker, worker_timeout=100, worker_threads=1) as stub_worker:
+        # Given that I a paused worker
+        stub_worker.pause()
 
-    # And actors with different priorities
-    calls = []
+        # And actors with different priorities
+        calls = []
 
-    @dramatiq.actor(priority=0)
-    def hi():
-        calls.append("hi")
+        @dramatiq.actor(priority=0)
+        def hi():
+            calls.append("hi")
 
-    @dramatiq.actor(priority=10)
-    def lo():
-        calls.append("lo")
+        @dramatiq.actor(priority=10)
+        def lo():
+            calls.append("lo")
 
-    # When I send both actors a message
-    lo.send()
-    hi.send()
+        # When I send both actors a nubmer of messages
+        for _ in range(10):
+            lo.send()
+            hi.send()
 
-    # Then resume the worker and join on the queue
-    stub_worker.resume()
-    stub_broker.join(lo.queue_name)
+        # Then resume the worker and join on the queue
+        stub_worker.resume()
+        stub_broker.join(lo.queue_name)
+        stub_worker.join()
+
+        # Then the high priority actor should run first
+        assert calls == ["hi"] * 10 + ["lo"] * 10
+
+
+def test_actors_can_conditionally_retry(stub_broker, stub_worker):
+    # Given that I have a retry predicate
+    def should_retry(retry_count, exception):
+        return retry_count < 3 and isinstance(exception, RuntimeError)
+
+    # And an actor that raises different types of errors
+    attempts = []
+
+    @dramatiq.actor(retry_when=should_retry, max_retries=0, min_backoff=100, max_backoff=100)
+    def raises_errors(raise_runtime_error):
+        attempts.append(1)
+        if raise_runtime_error:
+            raise RuntimeError("Runtime error")
+        raise ValueError("Value error")
+
+    # When I send that actor a message that makes it raise a value error
+    raises_errors.send(False)
+
+    # And wait for it
+    stub_broker.join(raises_errors.queue_name)
     stub_worker.join()
 
-    # Then the high priority actor should run first
-    assert calls == ["hi", "lo"]
+    # Then I expect the actor not to retry
+    assert sum(attempts) == 1
+
+    # When I send that actor a message that makes it raise a runtime error
+    attempts[:] = []
+    raises_errors.send(True)
+
+    # And wait for it
+    stub_broker.join(raises_errors.queue_name)
+    stub_worker.join()
+
+    # Then I expect the actor to retry 3 times
+    assert sum(attempts) == 4
+
+
+def test_can_call_str_on_actors():
+    # Given that I have an actor
+    @dramatiq.actor
+    def test():
+        pass
+
+    # When I call str on it
+    # Then I should get back its representation as a string
+    assert str(test) == "Actor(test)"
+
+
+def test_can_call_repr_on_actors():
+    # Given that I have an actor
+    @dramatiq.actor
+    def test():
+        pass
+
+    # When I call repr on it
+    # Then I should get back its representation
+    assert repr(test) == "Actor(%(fn)r, queue_name='default', actor_name='test')" % vars(test)
+
+
+def test_workers_log_rate_limit_exceeded_errors_differently(stub_broker, stub_worker):
+    # Given that I've mocked the logging class
+    with patch("logging.Logger.warning") as warning_mock:
+        # And I have an actor that raises RateLimitExceeded
+        @dramatiq.actor(max_retries=0)
+        def raise_rate_limit_exceeded():
+            raise RateLimitExceeded("exceeded")
+
+        # When I send that actor a message
+        raise_rate_limit_exceeded.send()
+
+        # And wait for the message to get processed
+        stub_broker.join(raise_rate_limit_exceeded.queue_name)
+        stub_worker.join()
+
+        # Then warning mock should be called with a special message
+        warning_messages = [args[0] for _, args, _ in warning_mock.mock_calls]
+        assert "Rate limit exceeded in message %s: %s." in warning_messages

@@ -1,6 +1,23 @@
-import time
+# This file is a part of Dramatiq.
+#
+# Copyright (C) 2017,2018 CLEARTYPE SRL <bogdan@cleartype.io>
+#
+# Dramatiq is free software; you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# Dramatiq is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from threading import Lock
+import time
+from collections import defaultdict
+from threading import Condition, Lock
 
 from ..backend import RateLimiterBackend
 
@@ -10,6 +27,7 @@ class StubBackend(RateLimiterBackend):
     """
 
     def __init__(self):
+        self.conditions = defaultdict(lambda: Condition(self.mutex))
         self.mutex = Lock()
         self.db = {}
 
@@ -44,12 +62,24 @@ class StubBackend(RateLimiterBackend):
             if value > maximum:
                 return False
 
-            values = sum(self._get(k, default=0) for k in keys)
+            # TODO: Drop non-callable keys in Dramatiq v2.
+            key_list = keys() if callable(keys) else keys
+            values = sum(self._get(k, default=0) for k in key_list)
             total = amount + values
             if total > maximum:
                 return False
 
             return self._put(key, value, ttl)
+
+    def wait(self, key, timeout):
+        cond = self.conditions[key]
+        with cond:
+            return cond.wait(timeout=timeout / 1000)
+
+    def wait_notify(self, key, ttl):
+        cond = self.conditions[key]
+        with cond:
+            cond.notify_all()
 
     def _get(self, key, *, default=None):
         value, expiration = self.db.get(key, (None, None))
